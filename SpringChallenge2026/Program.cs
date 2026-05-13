@@ -2,15 +2,10 @@
 using System.Collections.Generic;
 using System.Linq;
 
-class Position
+class Position(int x, int y)
 {
-    public int x;
-    public int y;
-    public Position(int x, int y)
-    {
-        this.x = x;
-        this.y = y;
-    }
+    public int x = x;
+    public int y = y;
 
     public int DistanceTo(Position other)
     {
@@ -53,24 +48,14 @@ class Map
     }
 }
 
-class Inventory
+class Inventory(int plum, int lemon, int apple, int banana, int iron, int wood)
 {
-    public int plum;
-    public int lemon;
-    public int apple;
-    public int banana;
-    public int iron;
-    public int wood;
-
-    public Inventory(int plum, int lemon, int apple, int banana, int iron, int wood)
-    {
-        this.plum = plum;
-        this.lemon = lemon;
-        this.apple = apple;
-        this.banana = banana;
-        this.iron = iron;
-        this.wood = wood;
-    }
+    public int plum = plum;
+    public int lemon = lemon;
+    public int apple = apple;
+    public int banana = banana;
+    public int iron = iron;
+    public int wood = wood;
 
     public static Inventory Parse(string description)
     {
@@ -85,42 +70,26 @@ class Inventory
     }
 }
 
-class Troll : Position
+class Troll(int id, int player,
+    int x, int y,
+    int movementSpeed, int carryCapacity,
+    int harvestPower, int chopPower,
+    int carryPlum, int carryLemon, int carryApple, int carryBanana, int carryIron, int carryWood) : Position(x, y)
 {
-    public int id;
-    public int player;
-    public int movementSpeed;
-    public int carryCapacity;
+    public int id = id;
+    public int player = player;
+    public int movementSpeed = movementSpeed;
+    public int carryCapacity = carryCapacity;
 
-    public int harvestPower;
-    public int chopPower;
+    public int harvestPower = harvestPower;
+    public int chopPower = chopPower;
 
-    public int carryPlum;
-    public int carryLemon;
-    public int carryApple;
-    public int carryBanana;
-    public int carryIron;
-    public int carryWood;
-
-    public Troll(int id, int player,
-        int x, int y,
-        int movementSpeed, int carryCapacity,
-        int harvestPower, int chopPower,
-        int carryPlum, int carryLemon, int carryApple, int carryBanana, int carryIron, int carryWood) : base(x, y)
-    {
-        this.id = id;
-        this.player = player;
-        this.movementSpeed = movementSpeed;
-        this.carryCapacity = carryCapacity;
-        this.harvestPower = harvestPower;
-        this.chopPower = chopPower;
-        this.carryPlum = carryPlum;
-        this.carryLemon = carryLemon;
-        this.carryApple = carryApple;
-        this.carryBanana = carryBanana;
-        this.carryIron = carryIron;
-        this.carryWood = carryWood;
-    }
+    public int carryPlum = carryPlum;
+    public int carryLemon = carryLemon;
+    public int carryApple = carryApple;
+    public int carryBanana = carryBanana;
+    public int carryIron = carryIron;
+    public int carryWood = carryWood;
 
     public static Troll Parse(string description)
     {
@@ -157,22 +126,13 @@ class Troll : Position
     }
 }
 
-class Tree : Position
+class Tree(string type, int x, int y, int size, int health, int fruits, int cooldown) : Position(x, y)
 {
-    public string type;
-    public int size;
-    public int health;
-    public int fruits;
-    public int cooldown;
-
-    public Tree(string type, int x, int y, int size, int health, int fruits, int cooldown) : base(x, y)
-    {
-        this.type = type;
-        this.size = size;
-        this.health = health;
-        this.fruits = fruits;
-        this.cooldown = cooldown;
-    }
+    public string type = type;
+    public int size = size;
+    public int health = health;
+    public int fruits = fruits;
+    public int cooldown = cooldown;
 
     public static Tree Parse(string description)
     {
