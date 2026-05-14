@@ -23,6 +23,8 @@ class Map
     public Position myShack;
     public Position opponentShack;
 
+    public List<Position> ironMines = [];
+
     public Map(int width, int height, string[] cells)
     {
         this.width = width;
@@ -41,6 +43,10 @@ class Map
                 else if (cells[y][x] == '1')
                 {
                     opponentShack = new Position(x, y);
+                }
+                else if (cells[y][x] == '+')
+                {
+                    ironMines.Add(new Position(x, y));
                 }
             }
         }
@@ -67,6 +73,14 @@ class Inventory(int plum, int lemon, int apple, int banana, int iron, int wood)
         int iron = int.Parse(inputs[4]);
         int wood = int.Parse(inputs[5]);
         return new Inventory(plum, lemon, apple, banana, iron, wood);
+    }
+
+    public void Pay((int plum, int lemon, int apple, int iron) cost)
+    {
+        this.plum -= cost.plum;
+        this.lemon -= cost.lemon;
+        this.apple -= cost.apple;
+        this.iron -= cost.iron;
     }
 }
 
@@ -157,24 +171,27 @@ class GameState
     public List<Inventory> inventories;
     public List<Tree> trees;
 
-    public List<Troll> trolls;
-    public GameState(Map map, List<Inventory> inventories, List<Tree> trees, List<Troll> trolls)
+    public List<Troll> myTrolls;
+    public List<Troll> enemyTrolls;
+
+    public GameState(Map map, List<Inventory> inventories, List<Tree> trees,
+        List<Troll> myTrolls, List<Troll> enemyTrolls)
     {
         this.map = map;
         this.inventories = inventories;
         this.trees = trees;
-        this.trolls = trolls;
+        this.myTrolls = myTrolls;
+        this.enemyTrolls = enemyTrolls;
     }
 
-    public Troll GetMe()
+    public Troll GetMyTroll(int trollId)
     {
-        return trolls[me];
+        return myTrolls.First(t => t.id == trollId);
     }
 }
-
+#region Commands
 abstract class Command
 {
-
 }
 
 class MoveCommand : Command
@@ -209,6 +226,57 @@ class HarvestCommand : Command
     }
 }
 
+class PlantCommand : Command
+{
+    public int id;
+    public string type;
+
+    /// <summary>
+    /// type = "PLUM", "LEMON", "APPLE", "BANANA"
+    /// </summary>
+    /// <param name="id"></param>
+    /// <param name="type"></param>
+    public PlantCommand(int id, string type)
+    {
+        id = id;
+        type = type;
+    }
+
+    public override string ToString()
+    {
+        return $"PLANT {id} {type}";
+    }
+}
+
+class ChopCommand : Command
+{
+    public int id;
+    public ChopCommand(int id)
+    {
+        this.id = id;
+    }
+    public override string ToString()
+    {
+        return $"CHOP {id}";
+    }
+}
+
+class PickCommand : Command
+{
+    public int id;
+    public string type;
+    /// <summary>
+    public PickCommand(int id, string type)
+    {
+        this.id = id;
+        this.type = type;
+    }
+    public override string ToString()
+    {
+        return $"PICK {id} {type}";
+    }
+}
+
 class DropCommand : Command
 {
     public int Id { get; set; }
@@ -222,6 +290,40 @@ class DropCommand : Command
     }
 }
 
+class TrainCommand : Command
+{
+    public int moveSpeed;
+    public int carryCapacity;
+    public int harvestPower;
+    public int chopPower;
+
+    public TrainCommand(int moveSpeed, int carryCapacity, int harvestPower, int chopPower)
+    {
+        this.moveSpeed = moveSpeed;
+        this.carryCapacity = carryCapacity;
+        this.harvestPower = harvestPower;
+        this.chopPower = chopPower;
+    }
+
+    public override string ToString()
+    {
+        return $"TRAIN {moveSpeed} {carryCapacity} {harvestPower} {chopPower}";
+    }
+}
+
+class MineCommand : Command
+{
+    public int id;
+    public MineCommand(int id)
+    {
+        this.id = id;
+    }
+    public override string ToString()
+    {
+        return $"MINE {id}";
+    }
+}
+
 class WaitCommand : Command
 {
     public override string ToString()
@@ -229,61 +331,443 @@ class WaitCommand : Command
         return "WAIT";
     }
 }
+#endregion
 
 
-/// <summary>
-/// Go to the nearest tree and harvest it, then go to the shack and drop the fruits, repeat.
-/// </summary>
-class BasicBot
+static class TaskManager
 {
-    private GameState gameState;
+    public static Queue<Task> pendingTasks = [];
+    public static Queue<NoTrollTask> noTrollTasks = [];
 
-    public BasicBot(GameState gameState)
+    public static Dictionary<int, Task?> tasksPerTroll = [];
+
+    public static void SetWorkers(IEnumerable<Troll> trolls)
     {
-        this.gameState = gameState;
+        foreach (var troll in trolls)
+        {
+            if (tasksPerTroll.ContainsKey(troll.id))
+            {
+                continue;
+            }
+
+            tasksPerTroll[troll.id] = null;
+        }
     }
 
-    public Command GetCommand(GameState gameState)
+    public static void AddTaskForNoTroll(NoTrollTask task)
     {
-        var me = gameState.GetMe();
+        noTrollTasks.Enqueue(task);
+    }
+
+    public static void AddTaskForTrolls(Task task)
+    {
+        pendingTasks.Enqueue(task);
+    }
+
+    public static List<Command> GetCommands(GameState gameState)
+    {
+        var commands = new List<Command>();
+
+        while (noTrollTasks.Count > 0)
+        {
+            var noTrollTask = noTrollTasks.Dequeue();
+            var command = noTrollTask.Run();
+            commands.Add(command);
+        }
+
+        foreach (var trollId in tasksPerTroll.Keys)
+        {
+            if (tasksPerTroll[trollId] == null)
+            {
+                if (pendingTasks.Count > 0)
+                {
+                    tasksPerTroll[trollId] = pendingTasks.Dequeue();
+                }
+                else
+                {
+                    tasksPerTroll[trollId] = new ChopTask();
+                }
+            }
+
+            var (command, isCompleted) = tasksPerTroll[trollId]!.Run(trollId, gameState);
+            commands.Add(command);
+
+            if (isCompleted)
+            {
+                tasksPerTroll[trollId] = null;
+            }
+        }
+
+        return commands;
+    }
+}
+
+abstract class Task
+{
+    static int taskCounter = 1;
+
+    public int id;
+
+    public Task()
+    {
+        id = taskCounter++;
+    }
+
+    public abstract (Command, bool isCompleted) Run(int trollId, GameState gameState);
+}
+
+class MineTask : Task
+{
+    public int amount;
+
+    public MineTask(int amount)
+    {
+        this.amount = amount;
+    }
+
+    public override (Command, bool isCompleted) Run(int trollId, GameState gameState)
+    {
+        var me = gameState.GetMyTroll(trollId);
         var hasCapacityLeft = me.HasCapacityLeft();
 
         if (hasCapacityLeft)
         {
-
-            // If we are on a tree and still have capacity left, harvest it
-            var matchingTree = gameState.trees.FirstOrDefault(t => t.DistanceTo(me) == 0);
-            if (matchingTree != null && matchingTree.fruits > 0 && hasCapacityLeft)
+            //If adjacent to a mine, mine it
+            var adjacentMine = gameState.map.ironMines.FirstOrDefault(t => t.DistanceTo(me) == 1);
+            if (adjacentMine != null)
             {
-                return new HarvestCommand(me.id);
+                return (new MineCommand(me.id), isCompleted: false);
+            }
+
+            // Otherwise, move to the nearest mine
+            var nearestMine = gameState.map.ironMines
+                .OrderBy(t => t.DistanceTo(me))
+                .FirstOrDefault();
+
+            return (new MoveCommand(me.id, nearestMine), isCompleted: false);
+        }
+        else
+        {
+            // If we are next to the shack, drop items
+            var myShack = gameState.map.myShack;
+
+            if (me.DistanceTo(myShack) == 1)
+            {
+                return (new DropCommand(me.id), isCompleted: true);
+            }
+
+            // Otherwise, move to the shack
+            return (new MoveCommand(me.id, myShack), isCompleted: false);
+        }
+    }
+}
+
+class HarvestTask : Task
+{
+    public string resourceType;
+    public int amount;
+
+    public HarvestTask(string resourceType, int amount)
+    {
+        this.resourceType = resourceType;
+        this.amount = amount;
+    }
+
+    public override string ToString()
+    {
+        return $"[{id}] Harvest {amount} of {resourceType}";
+    }
+
+    public override (Command, bool isCompleted) Run(int trollId, GameState gameState)
+    {
+        var me = gameState.GetMyTroll(trollId);
+        var hasCapacityLeft = me.HasCapacityLeft();
+
+        if (hasCapacityLeft)
+        {
+            // If we are on a tree and still have capacity left, harvest it
+            var matchingTree = gameState.trees.FirstOrDefault(t => t.type == resourceType && t.DistanceTo(me) == 0);
+            if (matchingTree != null && matchingTree.fruits > 0)
+            {
+                return (new HarvestCommand(me.id), isCompleted: false);
             }
 
             // Otherwise, move to the nearest tree
             var nearestTreeWithFruits = gameState.trees
-                .Where(t => t.fruits > 0)
+                .Where(t => t.type == resourceType)
                 .OrderBy(t => t.DistanceTo(me))
                 .FirstOrDefault();
 
             if (nearestTreeWithFruits == null)
             {
-                return new WaitCommand();
+                return (new WaitCommand(), isCompleted: true);
             }
 
-            return new MoveCommand(me.id, nearestTreeWithFruits);
+            return (new MoveCommand(me.id, nearestTreeWithFruits), isCompleted: false);
         }
         else
         {
+            //Capacity full, need to drop items
 
-            // If we are next to the shack and we have fruits, drop them
             var myShack = gameState.map.myShack;
-
-            if (me.DistanceTo(myShack) == 1 && me.HasFruits())
+            if (me.DistanceTo(myShack) == 1)
             {
-                return new DropCommand(me.id);
+                return (new DropCommand(me.id), isCompleted: true);
             }
 
             // Otherwise, move to the shack
-            return new MoveCommand(me.id, myShack);
+            return (new MoveCommand(me.id, myShack), isCompleted: false);
+        }
+    }
+}
+
+class ChopTask : Task
+{
+    public override string ToString()
+    {
+        return $"[{id}] Chop tree";
+    }
+
+    public override (Command, bool isCompleted) Run(int trollId, GameState gameState)
+    {
+        var me = gameState.GetMyTroll(trollId);
+        var hasCapacityLeft = me.HasCapacityLeft();
+
+        if (hasCapacityLeft)
+        {
+            // If we are on a tree and still have capacity left, chop it
+            var matchingTree = gameState.trees.FirstOrDefault(t => t.DistanceTo(me) == 0);
+            if (matchingTree != null)
+            {
+                return (new ChopCommand(me.id), isCompleted: false);
+            }
+
+            // Otherwise, move to the nearest tree
+            var nearestTree = gameState.trees
+                .OrderBy(t => t.DistanceTo(me))
+                .FirstOrDefault();
+
+            if (nearestTree == null)
+            {
+                return (new WaitCommand(), isCompleted: true);
+            }
+
+            return (new MoveCommand(me.id, nearestTree), isCompleted: false);
+        }
+        else
+        {
+            //Capacity full, need to drop items
+
+            var myShack = gameState.map.myShack;
+            if (me.DistanceTo(myShack) == 1)
+            {
+                return (new DropCommand(me.id), isCompleted: true);
+            }
+
+            // Otherwise, move to the shack
+            return (new MoveCommand(me.id, myShack), isCompleted: false);
+        }
+    }
+}
+
+abstract class NoTrollTask
+{
+    public abstract Command Run();
+}
+
+class TrainTask : NoTrollTask
+{
+    public int moveSpeed;
+    public int carryCapacity;
+    public int harvestPower;
+    public int chopPower;
+    public TrainTask(int moveSpeed, int carryCapacity, int harvestPower, int chopPower)
+    {
+        this.moveSpeed = moveSpeed;
+        this.carryCapacity = carryCapacity;
+        this.harvestPower = harvestPower;
+        this.chopPower = chopPower;
+    }
+
+    public (int plum, int lemon, int apple, int iron) GetCost(int existingTrolls)
+    {
+        return (
+            existingTrolls + (moveSpeed * moveSpeed),
+            existingTrolls + (carryCapacity * carryCapacity),
+            existingTrolls + (harvestPower * harvestPower),
+            existingTrolls + (chopPower * chopPower)
+        );
+    }
+
+    public override Command Run()
+    {
+        return new TrainCommand(moveSpeed, carryCapacity, harvestPower, chopPower);
+    }
+}
+
+abstract class Objective
+{
+    protected bool isInited = false;
+
+    public void Start(GameState gameState)
+    {
+        if (!isInited)
+        {
+            Init(gameState);
+            isInited = true;
+        }
+    }
+
+    protected abstract void Init(GameState gameState);
+
+    public abstract bool IsCompleted(GameState gameState);
+}
+
+class ReachInventory : Objective
+{
+    public int minPlum;
+    public int minLemon;
+    public int minApple;
+    public int minIron;
+
+    public ReachInventory(int minPlum, int minLemon, int minApple, int minIron)
+    {
+        this.minPlum = minPlum;
+        this.minLemon = minLemon;
+        this.minApple = minApple;
+        this.minIron = minIron;
+    }
+
+    protected override void Init(GameState gameState)
+    {
+        var commands = new List<Command>();
+        var myInventory = gameState.inventories[0];
+
+        // Check if we need to reach for any resources
+        if (myInventory.plum < minPlum)
+        {
+            for (int i = 0; i < minPlum - myInventory.plum; i++)
+                TaskManager.AddTaskForTrolls(new HarvestTask("PLUM", 1));
+        }
+        if (myInventory.lemon < minLemon)
+        {
+            for (int i = 0; i < minLemon - myInventory.lemon; i++)
+                TaskManager.AddTaskForTrolls(new HarvestTask("LEMON", 1));
+        }
+        if (myInventory.apple < minApple)
+        {
+            for (int i = 0; i < minApple - myInventory.apple; i++)
+                TaskManager.AddTaskForTrolls(new HarvestTask("APPLE", 1));
+        }
+        if (myInventory.iron < minIron)
+        {
+            for (int i = 0; i < minIron - myInventory.iron; i++)
+                TaskManager.AddTaskForTrolls(new MineTask(1));
+        }
+    }
+
+    public override bool IsCompleted(GameState gameState)
+    {
+        var myInventory = gameState.inventories[0];
+
+        var isCompleted = true;
+
+        // Check if we need to reach for any resources
+        if (myInventory.plum < minPlum)
+        {
+            isCompleted = false;
+        }
+        if (myInventory.lemon < minLemon)
+        {
+            isCompleted = false;
+        }
+        if (myInventory.apple < minApple)
+        {
+            isCompleted = false;
+        }
+        if (myInventory.iron < minIron)
+        {
+            isCompleted = false;
+        }
+
+        return isCompleted;
+    }
+
+    public override string ToString()
+    {
+        return "ReachInventory";
+    }
+}
+
+class TrainTroll : Objective
+{
+    public int moveSpeed;
+    public int carryCapacity;
+    public int harvestPower;
+    public int chopPower;
+
+    public TrainTroll(int moveSpeed, int carryCapacity, int harvestPower, int chopPower)
+    {
+        this.moveSpeed = moveSpeed;
+        this.carryCapacity = carryCapacity;
+        this.harvestPower = harvestPower;
+        this.chopPower = chopPower;
+    }
+
+    protected override void Init(GameState gameState)
+    {
+        var task = new TrainTask(moveSpeed, carryCapacity, harvestPower, chopPower);
+        TaskManager.AddTaskForNoTroll(task);
+
+        var cost = task.GetCost(gameState.myTrolls.Count);
+        gameState.inventories[0].Pay(cost);
+    }
+
+    public override bool IsCompleted(GameState gameState)
+    {
+        return gameState.myTrolls.Any(t => t.movementSpeed == moveSpeed
+            && t.carryCapacity == carryCapacity
+            && t.harvestPower == harvestPower
+            && t.chopPower == chopPower);
+    }
+
+    public override string ToString()
+    {
+        return "TrainTroll";
+    }
+}
+/// <summary>
+/// Plays a script of the game
+/// </summary>
+class Script
+{
+    private Queue<Objective> objectives = new Queue<Objective>();
+
+    public Script()
+    {
+        objectives.Enqueue(new ReachInventory(2, 2, 2, 2));
+        objectives.Enqueue(new TrainTroll(1, 1, 1, 1));
+        objectives.Enqueue(new ReachInventory(3, 3, 3, 3));
+        objectives.Enqueue(new TrainTroll(1, 1, 1, 1));
+        objectives.Enqueue(new ReachInventory(4, 4, 4, 4));
+        objectives.Enqueue(new TrainTroll(1, 1, 1, 1));
+    }
+
+    public void Play(GameState gameState)
+    {
+        while (objectives.Count > 0)
+        {
+            var objective = objectives.Peek();
+            objective.Start(gameState);
+
+            if (objective.IsCompleted(gameState) == false)
+            {
+                return;
+            }
+            else
+            {
+                objectives.Dequeue();
+            }
         }
     }
 }
@@ -316,6 +800,8 @@ public class Program
         }
         var map = new Map(width, height, cells);
 
+        var script = new Script();
+
         // game loop
         while (true)
         {
@@ -333,27 +819,29 @@ public class Program
             }
             int trollsCount = int.Parse(ReadLine());
 
-            var trolls = new List<Troll>(trollsCount);
+            var myTrolls = new List<Troll>(trollsCount);
+            var enemyTrolls = new List<Troll>(trollsCount);
+
             for (int i = 0; i < trollsCount; i++)
             {
-                trolls.Add(Troll.Parse(ReadLine()));
+                var troll = Troll.Parse(ReadLine());
+                if (troll.player == 0)
+                    myTrolls.Add(troll);
+                else
+                    enemyTrolls.Add(troll);
             }
 
-            var gameState = new GameState(map, inventories, trees, trolls);
+            TaskManager.SetWorkers(myTrolls);
 
-            // Write an action using Console.WriteLine()
-            // To debug: Console.Error.WriteLine("Debug messages...");
+            var gameState = new GameState(map, inventories, trees, myTrolls, enemyTrolls);
 
+            script.Play(gameState);
 
-            // valid actions:
-            // MOVE <id> <x> <y>
-            // HARVEST <id> - when you are on the same cell as a tree
-            // DROP <id> - when you are next to your shack and carry items
-            var basicBot = new BasicBot(gameState);
+            var commands = TaskManager.GetCommands(gameState);
 
-            var command = basicBot.GetCommand(gameState);
+            var output = string.Join(";", commands.Select(c => c.ToString()));
 
-            Console.WriteLine(command.ToString());
+            Console.WriteLine(output);
         }
     }
 }
