@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
-
+#region entities
 class Position(int x, int y)
 {
     public int x = x;
@@ -11,10 +11,23 @@ class Position(int x, int y)
     {
         return Math.Abs(x - other.x) + Math.Abs(y - other.y);
     }
+
+    public void Deconstruct(out int x, out int y)
+    {
+        x = this.x;
+        y = this.y;
+    }
 }
 
 class Map
 {
+    public const char GRASS = '.';
+    public const char MY_SHACK = '0';
+    public const char OPPONENT_SHACK = '1';
+    public const char IRON = '+';
+    public const char WATER = '-';
+    public const char ROCK = '#';
+
     public int width;
     public int height;
 
@@ -24,6 +37,8 @@ class Map
     public Position opponentShack;
 
     public List<Position> ironMines = [];
+
+    public List<Position> grassCellsAroundMyShack = [];
 
     public Map(int width, int height, string[] cells)
     {
@@ -36,21 +51,45 @@ class Map
         {
             for (int x = 0; x < width; x++)
             {
-                if (cells[y][x] == '0')
+                if (cells[y][x] == Map.MY_SHACK)
                 {
                     myShack = new Position(x, y);
                 }
-                else if (cells[y][x] == '1')
+                else if (cells[y][x] == Map.OPPONENT_SHACK)
                 {
                     opponentShack = new Position(x, y);
                 }
-                else if (cells[y][x] == '+')
+                else if (cells[y][x] == Map.IRON)
                 {
                     ironMines.Add(new Position(x, y));
                 }
             }
         }
 
+        InitGrassCellsAroundMyShack();
+    }
+
+    private void InitGrassCellsAroundMyShack()
+    {
+        var cellsAroundShack = new List<(int, int)>
+        {
+            (myShack.x - 1, myShack.y),
+            (myShack.x + 1, myShack.y),
+            (myShack.x, myShack.y - 1),
+            (myShack.x, myShack.y + 1),
+            (myShack.x - 1, myShack.y - 1),
+            (myShack.x - 1, myShack.y + 1),
+            (myShack.x + 1, myShack.y - 1),
+            (myShack.x + 1, myShack.y + 1),
+        };
+        foreach (var (x, y) in cellsAroundShack)
+        {
+            if (0 <= x && x < width && 0 <= y && y < height
+                && cells[y][x] == Map.GRASS)
+            {
+                grassCellsAroundMyShack.Add(new Position(x, y));
+            }
+        }
     }
 }
 
@@ -138,6 +177,20 @@ class Troll(int id, int player,
     {
         return (carryPlum + carryLemon + carryApple + carryBanana + carryIron + carryWood) < carryCapacity;
     }
+
+    public int CarryType(string type)
+    {
+        return type switch
+        {
+            "PLUM" => carryPlum,
+            "LEMON" => carryLemon,
+            "APPLE" => carryApple,
+            "BANANA" => carryBanana,
+            "IRON" => carryIron,
+            "WOOD" => carryWood,
+            _ => 0
+        };
+    }
 }
 
 class Tree(string type, int x, int y, int size, int health, int fruits, int cooldown) : Position(x, y)
@@ -188,7 +241,14 @@ class GameState
     {
         return myTrolls.First(t => t.id == trollId);
     }
+
+    public Tree? GetTree(Position position)
+    {
+        return trees.FirstOrDefault(t => t.x == position.x && t.y == position.y);
+    }
 }
+#endregion
+
 #region Commands
 abstract class Command
 {
@@ -238,8 +298,8 @@ class PlantCommand : Command
     /// <param name="type"></param>
     public PlantCommand(int id, string type)
     {
-        id = id;
-        type = type;
+        this.id = id;
+        this.type = type;
     }
 
     public override string ToString()
@@ -331,8 +391,8 @@ class WaitCommand : Command
         return "WAIT";
     }
 }
-#endregion
 
+#endregion
 
 static class TaskManager
 {
@@ -361,6 +421,7 @@ static class TaskManager
 
     public static void AddTaskForTrolls(Task task)
     {
+        //Program.Debug($"Adding task for trolls: {task}");
         pendingTasks.Enqueue(task);
     }
 
@@ -418,11 +479,11 @@ abstract class Task
 
 class MineTask : Task
 {
-    public int amount;
+    public int amountToMine;
 
     public MineTask(int amount)
     {
-        this.amount = amount;
+        this.amountToMine = amount;
     }
 
     public override (Command, bool isCompleted) Run(int trollId, GameState gameState)
@@ -453,7 +514,8 @@ class MineTask : Task
 
             if (me.DistanceTo(myShack) == 1)
             {
-                return (new DropCommand(me.id), isCompleted: true);
+                amountToMine = amountToMine - me.carryIron;
+                return (new DropCommand(me.id), isCompleted: amountToMine == 0);
             }
 
             // Otherwise, move to the shack
@@ -465,17 +527,17 @@ class MineTask : Task
 class HarvestTask : Task
 {
     public string resourceType;
-    public int amount;
+    public int amountToHarvest;
 
     public HarvestTask(string resourceType, int amount)
     {
         this.resourceType = resourceType;
-        this.amount = amount;
+        this.amountToHarvest = amount;
     }
 
     public override string ToString()
     {
-        return $"[{id}] Harvest {amount} of {resourceType}";
+        return $"[{id}] Harvest {amountToHarvest} of {resourceType}";
     }
 
     public override (Command, bool isCompleted) Run(int trollId, GameState gameState)
@@ -494,7 +556,7 @@ class HarvestTask : Task
 
             // Otherwise, move to the nearest tree
             var nearestTreeWithFruits = gameState.trees
-                .Where(t => t.type == resourceType)
+                .Where(t => t.type == resourceType && t.fruits > 0)
                 .OrderBy(t => t.DistanceTo(me))
                 .FirstOrDefault();
 
@@ -512,7 +574,16 @@ class HarvestTask : Task
             var myShack = gameState.map.myShack;
             if (me.DistanceTo(myShack) == 1)
             {
-                return (new DropCommand(me.id), isCompleted: true);
+                var droppedResource = resourceType switch
+                {
+                    "PLUM" => me.carryPlum,
+                    "LEMON" => me.carryLemon,
+                    "APPLE" => me.carryApple,
+                    "BANANA" => me.carryBanana,
+                    _ => 0
+                };
+                amountToHarvest = amountToHarvest - droppedResource;
+                return (new DropCommand(me.id), isCompleted: amountToHarvest == 0);
             }
 
             // Otherwise, move to the shack
@@ -535,8 +606,8 @@ class ChopTask : Task
 
         if (hasCapacityLeft)
         {
-            // If we are on a tree and still have capacity left, chop it
-            var matchingTree = gameState.trees.FirstOrDefault(t => t.DistanceTo(me) == 0);
+            // If we are on a tree not next to the shaand still have capacity left, chop it
+            var matchingTree = gameState.trees.FirstOrDefault(t => t.DistanceTo(me) == 0 && t.DistanceTo(gameState.map.myShack) > 1);
             if (matchingTree != null)
             {
                 return (new ChopCommand(me.id), isCompleted: false);
@@ -544,6 +615,8 @@ class ChopTask : Task
 
             // Otherwise, move to the nearest tree
             var nearestTree = gameState.trees
+                // ignore trees next to the shack as they are used to collect fruits
+                .Where(t => t.DistanceTo(gameState.map.myShack) > 1)
                 .OrderBy(t => t.DistanceTo(me))
                 .FirstOrDefault();
 
@@ -567,6 +640,64 @@ class ChopTask : Task
             // Otherwise, move to the shack
             return (new MoveCommand(me.id, myShack), isCompleted: false);
         }
+    }
+}
+
+class PlantTask : Task
+{
+    private string type;
+    private Position position;
+
+    public PlantTask(string type, Position p)
+    {
+        this.type = type;
+        this.position = p;
+    }
+
+    public override (Command, bool isCompleted) Run(int trollId, GameState gameState)
+    {
+        //Program.Debug($"Running PlantTask for troll {trollId}, type: {type}, position: ({position.x}, {position.y})");
+
+        var me = gameState.GetMyTroll(trollId);
+
+        if (me.CarryType(type) == 0)
+        {
+            //Pick a fruit of the type we want to plant
+            if (me.DistanceTo(gameState.map.myShack) == 1)
+            {
+                return (new PickCommand(me.id, type), isCompleted: false);
+            }
+            else if (me.DistanceTo(gameState.map.myShack) == 0)
+            {
+                //Case the troll is just trained and is on the shack.
+                // Need to move him out of the shack to be able to pick the fruit
+                var grassAroundShack = gameState.map.grassCellsAroundMyShack;
+                var random = new Random();
+                return (new MoveCommand(me.id, grassAroundShack[random.Next(grassAroundShack.Count)]), isCompleted: false);
+            }
+            else
+            {
+                // Move to the shack to pick the fruit
+                return (new MoveCommand(me.id, gameState.map.myShack), isCompleted: false);
+            }
+        }
+        else
+        {
+            //Go plant it at the position
+            if (me.DistanceTo(position) == 0)
+            {
+                return (new PlantCommand(me.id, type), isCompleted: true);
+            }
+            else
+            {
+                return (new MoveCommand(me.id, position), isCompleted: false);
+            }
+        }
+    }
+
+    public override string ToString()
+    {
+        return $"[PlantTask] Type: {type}, Position: {position}";
     }
 }
 
@@ -623,6 +754,74 @@ abstract class Objective
     public abstract bool IsCompleted(GameState gameState);
 }
 
+/// <summary>
+/// Objective is to have a plum, lemon, apple (excluding banana) tree in each of the ground cells around the shack. 
+/// This allows to have a constant source of fruits for harvesting and training trolls
+/// </summary>
+class SeedAroundShack : Objective
+{
+    public override bool IsCompleted(GameState gameState)
+    {
+        var (hasPlum, hasLemon, hasApple) = GetObjectiveState(gameState);
+        var isCompleted = hasPlum && hasLemon && hasApple;
+        //Program.Debug($"SeedAroundShack objective: {isCompleted}");
+
+        return isCompleted;
+    }
+
+    protected override void Init(GameState gameState)
+    {
+        //Program.Debug("Initializing SeedAroundShack objective");
+        var (hasPlum, hasLemon, hasApple) = GetObjectiveState(gameState);
+
+        var positionsAroundShack = gameState.map.grassCellsAroundMyShack;
+        var freePositions = positionsAroundShack.Where(p => gameState.GetTree(p) == null).ToList();
+
+        if (hasPlum == false)
+        {
+            TaskManager.AddTaskForTrolls(new PlantTask(Program.PLUM, freePositions[0]));
+        }
+
+        if (hasLemon == false)
+        {
+            TaskManager.AddTaskForTrolls(new PlantTask(Program.LEMON, freePositions[1]));
+        }
+
+        if (hasApple == false)
+        {
+            TaskManager.AddTaskForTrolls(new PlantTask(Program.APPLE, freePositions[2]));
+        }
+    }
+
+    private (bool hasPlum, bool hasLemon, bool hasApple) GetObjectiveState(GameState gameState)
+    {
+        var hasPlum = false;
+        var hasLemon = false;
+        var hasApple = false;
+        foreach (var position in gameState.map.grassCellsAroundMyShack)
+        {
+            var tree = gameState.GetTree(position);
+            if (tree is not null)
+            {
+                var type = tree.type;
+                if (type == "PLUM")
+                {
+                    hasPlum = true;
+                }
+                else if (type == "LEMON")
+                {
+                    hasLemon = true;
+                }
+                else if (type == "APPLE")
+                {
+                    hasApple = true;
+                }
+            }
+        }
+        return (hasPlum, hasLemon, hasApple);
+    }
+}
+
 class ReachInventory : Objective
 {
     public int minPlum;
@@ -640,29 +839,24 @@ class ReachInventory : Objective
 
     protected override void Init(GameState gameState)
     {
-        var commands = new List<Command>();
         var myInventory = gameState.inventories[0];
 
         // Check if we need to reach for any resources
         if (myInventory.plum < minPlum)
         {
-            for (int i = 0; i < minPlum - myInventory.plum; i++)
-                TaskManager.AddTaskForTrolls(new HarvestTask("PLUM", 1));
+            TaskManager.AddTaskForTrolls(new HarvestTask(Program.PLUM, minPlum - myInventory.plum));
         }
         if (myInventory.lemon < minLemon)
         {
-            for (int i = 0; i < minLemon - myInventory.lemon; i++)
-                TaskManager.AddTaskForTrolls(new HarvestTask("LEMON", 1));
+            TaskManager.AddTaskForTrolls(new HarvestTask(Program.LEMON, minLemon - myInventory.lemon));
         }
         if (myInventory.apple < minApple)
         {
-            for (int i = 0; i < minApple - myInventory.apple; i++)
-                TaskManager.AddTaskForTrolls(new HarvestTask("APPLE", 1));
+            TaskManager.AddTaskForTrolls(new HarvestTask(Program.APPLE, minApple - myInventory.apple));
         }
         if (myInventory.iron < minIron)
         {
-            for (int i = 0; i < minIron - myInventory.iron; i++)
-                TaskManager.AddTaskForTrolls(new MineTask(1));
+            TaskManager.AddTaskForTrolls(new MineTask(minIron - myInventory.iron));
         }
     }
 
@@ -745,12 +939,22 @@ class Script
 
     public Script()
     {
+        //Get 2nd troll
         objectives.Enqueue(new ReachInventory(2, 2, 2, 2));
-        objectives.Enqueue(new TrainTroll(1, 1, 1, 1));
+        objectives.Enqueue(new TrainTroll(1, 1, 1, 1)); //2nd troll
+
+        //plants around the shack to be able to harvest and train trolls while waiting for the iron mines to be available again
+        objectives.Enqueue(new ReachInventory(1, 1, 1, 0));
+        objectives.Enqueue(new SeedAroundShack());
+
+        //Get 3rd troll 
         objectives.Enqueue(new ReachInventory(3, 3, 3, 3));
-        objectives.Enqueue(new TrainTroll(1, 1, 1, 1));
-        objectives.Enqueue(new ReachInventory(4, 4, 4, 4));
-        objectives.Enqueue(new TrainTroll(1, 1, 1, 1));
+        objectives.Enqueue(new TrainTroll(1, 1, 1, 1)); //3rd troll
+
+        //Get 4th troll
+        objectives.Enqueue(new ReachInventory(7, 7, 5, 7));
+        objectives.Enqueue(new TrainTroll(2, 2, 1, 2)); //4th troll
+
     }
 
     public void Play(GameState gameState)
@@ -774,6 +978,12 @@ class Script
 
 public class Program
 {
+    public const string PLUM = "PLUM";
+    public const string LEMON = "LEMON";
+    public const string APPLE = "APPLE";
+    public const string BANANA = "BANANA";
+    public const string IRON = "IRON";
+
     public static void Debug(string text)
     {
         Console.Error.WriteLine(text);
