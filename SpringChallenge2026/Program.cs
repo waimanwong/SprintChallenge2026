@@ -17,6 +17,11 @@ class Position(int x, int y)
         x = this.x;
         y = this.y;
     }
+
+    override public string ToString()
+    {
+        return $"({x}, {y})";
+    }
 }
 
 class Map
@@ -73,14 +78,16 @@ class Map
     {
         var cellsAroundShack = new List<(int, int)>
         {
-            (myShack.x - 1, myShack.y),
-            (myShack.x + 1, myShack.y),
-            (myShack.x, myShack.y - 1),
-            (myShack.x, myShack.y + 1),
             (myShack.x - 1, myShack.y - 1),
             (myShack.x - 1, myShack.y + 1),
             (myShack.x + 1, myShack.y - 1),
             (myShack.x + 1, myShack.y + 1),
+
+            (myShack.x - 1, myShack.y),
+            (myShack.x + 1, myShack.y),
+            (myShack.x, myShack.y - 1),
+            (myShack.x, myShack.y + 1),
+
         };
         foreach (var (x, y) in cellsAroundShack)
         {
@@ -416,12 +423,13 @@ static class TaskManager
 
     public static void AddTaskForNoTroll(NoTrollTask task)
     {
+        Program.Debug($"Adding task for no trolls: {task}");
         noTrollTasks.Enqueue(task);
     }
 
     public static void AddTaskForTrolls(Task task)
     {
-        //Program.Debug($"Adding task for trolls: {task}");
+        Program.Debug($"Adding task for trolls: {task}");
         pendingTasks.Enqueue(task);
     }
 
@@ -446,7 +454,9 @@ static class TaskManager
                 }
                 else
                 {
-                    tasksPerTroll[trollId] = new ChopTask();
+                    // No pending tasks, assign a default task to keep the troll busy
+                    Program.Debug($"No pending tasks for troll {trollId}, assigning default MineTask");
+                    tasksPerTroll[trollId] = new MineTask(1);
                 }
             }
 
@@ -554,7 +564,7 @@ class HarvestTask : Task
                 return (new HarvestCommand(me.id), isCompleted: false);
             }
 
-            // Otherwise, move to the nearest tree
+            // Otherwise, move to the nearest tree with fruits of the desired type
             var nearestTreeWithFruits = gameState.trees
                 .Where(t => t.type == resourceType && t.fruits > 0)
                 .OrderBy(t => t.DistanceTo(me))
@@ -764,40 +774,51 @@ class SeedAroundShack : Objective
     {
         var (hasPlum, hasLemon, hasApple) = GetObjectiveState(gameState);
         var isCompleted = hasPlum && hasLemon && hasApple;
-        //Program.Debug($"SeedAroundShack objective: {isCompleted}");
+
+        Program.Debug($"SeedAroundShack completed {isCompleted}");
 
         return isCompleted;
     }
 
     protected override void Init(GameState gameState)
     {
-        //Program.Debug("Initializing SeedAroundShack objective");
+        Program.Debug("Initializing SeedAroundShack objective");
         var (hasPlum, hasLemon, hasApple) = GetObjectiveState(gameState);
 
         var positionsAroundShack = gameState.map.grassCellsAroundMyShack;
         var freePositions = positionsAroundShack.Where(p => gameState.GetTree(p) == null).ToList();
 
-        if (hasPlum == false)
+        var i = 0;
+        while (i < freePositions.Count)
         {
-            TaskManager.AddTaskForTrolls(new PlantTask(Program.PLUM, freePositions[0]));
+            if (hasPlum == false)
+            {
+                TaskManager.AddTaskForTrolls(new PlantTask(Program.PLUM, freePositions[i++]));
+            }
+
+            if (hasLemon == false)
+            {
+                TaskManager.AddTaskForTrolls(new PlantTask(Program.LEMON, freePositions[i++]));
+            }
+            if (hasApple == false)
+            {
+                TaskManager.AddTaskForTrolls(new PlantTask(Program.APPLE, freePositions[i++]));
+            }
         }
 
-        if (hasLemon == false)
+        while (i < freePositions.Count)
         {
-            TaskManager.AddTaskForTrolls(new PlantTask(Program.LEMON, freePositions[1]));
-        }
-
-        if (hasApple == false)
-        {
-            TaskManager.AddTaskForTrolls(new PlantTask(Program.APPLE, freePositions[2]));
+            TaskManager.AddTaskForTrolls(new PlantTask(Program.PLUM, freePositions[i++]));
         }
     }
 
     private (bool hasPlum, bool hasLemon, bool hasApple) GetObjectiveState(GameState gameState)
     {
+
         var hasPlum = false;
         var hasLemon = false;
         var hasApple = false;
+
         foreach (var position in gameState.map.grassCellsAroundMyShack)
         {
             var tree = gameState.GetTree(position);
@@ -818,6 +839,7 @@ class SeedAroundShack : Objective
                 }
             }
         }
+
         return (hasPlum, hasLemon, hasApple);
     }
 }
@@ -829,39 +851,67 @@ class ReachInventory : Objective
     public int minApple;
     public int minIron;
 
-    public ReachInventory(int minPlum, int minLemon, int minApple, int minIron)
+    public ReachInventory((int minPlum, int minLemon, int minApple, int minIron) min)
     {
-        this.minPlum = minPlum;
-        this.minLemon = minLemon;
-        this.minApple = minApple;
-        this.minIron = minIron;
+        this.minPlum = min.minPlum;
+        this.minLemon = min.minLemon;
+        this.minApple = min.minApple;
+        this.minIron = min.minIron;
     }
 
     protected override void Init(GameState gameState)
     {
+        Program.Debug($"Initializing ReachInventory {minPlum} {minLemon} {minApple} {minIron}");
+
         var myInventory = gameState.inventories[0];
+
+        var lowUrgentTasks = new List<Task>();
 
         // Check if we need to reach for any resources
         if (myInventory.plum < minPlum)
         {
-            TaskManager.AddTaskForTrolls(new HarvestTask(Program.PLUM, minPlum - myInventory.plum));
+            var harvestTask = new HarvestTask(Program.PLUM, minPlum - myInventory.plum);
+            var fruitAvailable = gameState.trees.Count(t => t.type == Program.PLUM && t.fruits > 0) > 0;
+            if (fruitAvailable)
+                TaskManager.AddTaskForTrolls(harvestTask);
+            else
+                lowUrgentTasks.Add(harvestTask);
+
         }
         if (myInventory.lemon < minLemon)
         {
-            TaskManager.AddTaskForTrolls(new HarvestTask(Program.LEMON, minLemon - myInventory.lemon));
+            var harvestTask = new HarvestTask(Program.LEMON, minLemon - myInventory.lemon);
+            var fruitAvailable = gameState.trees.Count(t => t.type == Program.LEMON && t.fruits > 0) > 0;
+
+            if (fruitAvailable)
+                TaskManager.AddTaskForTrolls(harvestTask);
+            else
+                lowUrgentTasks.Add(harvestTask);
         }
         if (myInventory.apple < minApple)
         {
-            TaskManager.AddTaskForTrolls(new HarvestTask(Program.APPLE, minApple - myInventory.apple));
+            var harvestTask = new HarvestTask(Program.APPLE, minApple - myInventory.apple);
+            var fruitAvailable = gameState.trees.Count(t => t.type == Program.APPLE && t.fruits > 0) > 0;
+
+            if (fruitAvailable)
+                TaskManager.AddTaskForTrolls(harvestTask);
+            else
+                lowUrgentTasks.Add(harvestTask);
         }
         if (myInventory.iron < minIron)
         {
             TaskManager.AddTaskForTrolls(new MineTask(minIron - myInventory.iron));
         }
+
+        foreach (var task in lowUrgentTasks)
+        {
+            TaskManager.AddTaskForTrolls(task);
+        }
     }
 
     public override bool IsCompleted(GameState gameState)
     {
+
         var myInventory = gameState.inventories[0];
 
         var isCompleted = true;
@@ -884,6 +934,8 @@ class ReachInventory : Objective
             isCompleted = false;
         }
 
+        Program.Debug($"ReachInventory ({minPlum}, {minLemon}, {minApple}, {minIron}) completed: {isCompleted}");
+
         return isCompleted;
     }
 
@@ -900,16 +952,17 @@ class TrainTroll : Objective
     public int harvestPower;
     public int chopPower;
 
-    public TrainTroll(int moveSpeed, int carryCapacity, int harvestPower, int chopPower)
+    public TrainTroll((int moveSpeed, int carryCapacity, int harvestPower, int chopPower) desired)
     {
-        this.moveSpeed = moveSpeed;
-        this.carryCapacity = carryCapacity;
-        this.harvestPower = harvestPower;
-        this.chopPower = chopPower;
+        this.moveSpeed = desired.moveSpeed;
+        this.carryCapacity = desired.carryCapacity;
+        this.harvestPower = desired.harvestPower;
+        this.chopPower = desired.chopPower;
     }
 
     protected override void Init(GameState gameState)
     {
+        Program.Debug($"Initializing TrainTroll {moveSpeed} {carryCapacity} {harvestPower} {chopPower}");
         var task = new TrainTask(moveSpeed, carryCapacity, harvestPower, chopPower);
         TaskManager.AddTaskForNoTroll(task);
 
@@ -919,10 +972,9 @@ class TrainTroll : Objective
 
     public override bool IsCompleted(GameState gameState)
     {
-        return gameState.myTrolls.Any(t => t.movementSpeed == moveSpeed
-            && t.carryCapacity == carryCapacity
-            && t.harvestPower == harvestPower
-            && t.chopPower == chopPower);
+        //Immediate completion
+        Program.Debug($"TrainTroll completed: true");
+        return true;
     }
 
     public override string ToString()
@@ -939,22 +991,45 @@ class Script
 
     public Script()
     {
-        //Get 2nd troll
-        objectives.Enqueue(new ReachInventory(2, 2, 2, 2));
-        objectives.Enqueue(new TrainTroll(1, 1, 1, 1)); //2nd troll
+        var nbTrolls = 1;
 
-        //plants around the shack to be able to harvest and train trolls while waiting for the iron mines to be available again
-        objectives.Enqueue(new ReachInventory(1, 1, 1, 0));
+        //Get 2nd troll
+        var desired = (1, 1, 1, 1);
+        objectives.Enqueue(new ReachInventory(CalculateCost(nbTrolls++, desired)));
+        objectives.Enqueue(new TrainTroll(desired)); //2nd troll
+
+        //plants around the shack to be able to harvest and train trolls
+        objectives.Enqueue(new ReachInventory((2, 2, 2, 0)));
         objectives.Enqueue(new SeedAroundShack());
 
         //Get 3rd troll 
-        objectives.Enqueue(new ReachInventory(3, 3, 3, 3));
-        objectives.Enqueue(new TrainTroll(1, 1, 1, 1)); //3rd troll
+        desired = (2, 2, 1, 1);
+        objectives.Enqueue(new ReachInventory(CalculateCost(nbTrolls++, desired)));
+        objectives.Enqueue(new TrainTroll(desired)); //3rd troll
 
         //Get 4th troll
-        objectives.Enqueue(new ReachInventory(7, 7, 5, 7));
-        objectives.Enqueue(new TrainTroll(2, 2, 1, 2)); //4th troll
+        desired = (2, 2, 1, 2);
+        objectives.Enqueue(new ReachInventory(CalculateCost(nbTrolls++, desired)));
+        objectives.Enqueue(new TrainTroll(desired)); //4th troll
 
+        //Mass Harvest 
+        objectives.Enqueue(new ReachInventory((50, 50, 50, 0)));
+    }
+
+    public static (int requiredApple, int requiredLemon, int requiredPlum, int requiredIron) CalculateCost(
+        int nbTrolls, (int moveSpeed, int carryCapacity, int harvestPower, int chopPower) desired)
+    {
+        return (
+            CalculateCost(nbTrolls, desired.harvestPower), //apple
+            CalculateCost(nbTrolls, desired.carryCapacity), //lemon
+            CalculateCost(nbTrolls, desired.moveSpeed), //plum
+            CalculateCost(nbTrolls, desired.chopPower) //iron
+        );
+    }
+
+    private static int CalculateCost(int nbTrolls, int desiredCharacteristic)
+    {
+        return nbTrolls + (desiredCharacteristic * desiredCharacteristic);
     }
 
     public void Play(GameState gameState)
