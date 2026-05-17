@@ -652,11 +652,10 @@ static class Player
     {
         var commands = new List<Command>();
 
-        var basicTroll = new Characteristics(1, 1, 1, 0);
-
-        if (CanTrainTroll(gameState, basicTroll, out Cost requiredResources))
+        var trainCommand = TrainManager.TrainCommand(gameState);
+        if (trainCommand is not null)
         {
-            commands.Add(new TrainCommand(basicTroll));
+            commands.Add(trainCommand);
         }
 
         foreach (var (trollId, task) in tasks)
@@ -681,18 +680,43 @@ static class Player
         return commands;
     }
 
-    private static bool CanTrainTroll(GameState gameState, Characteristics desiredCharacteristics,
-        out Cost requiredResources)
+}
+
+static class TrainManager
+{
+    public static TrainCommand? TrainCommand(GameState gameState)
     {
-        var inventory = gameState.inventories[0];
-        var cost = desiredCharacteristics.GetCost(gameState);
+        var trollToTrain = GetCharacteristics(gameState);
+        if (trollToTrain is null)
+        {
+            return null;
+        }
 
-        var canPay = inventory.CanPay(cost, out Cost missing);
-        requiredResources = missing;
+        var myInventory = gameState.myInventory;
+        var cost = trollToTrain.GetCost(gameState);
 
-        Program.Debug($"Missing resources: {missing.plum} PLUM, {missing.lemon} LEMON, {missing.apple} APPLE, {missing.iron} IRON");
+        var canPay = myInventory.CanPay(cost, out Cost missing);
+        if (canPay == false)
+        {
+            return null;
+        }
 
-        return canPay;
+        var trainCommand = new TrainCommand(trollToTrain);
+        myInventory.Pay(cost);
+        return trainCommand;
+    }
+
+    private static Characteristics? GetCharacteristics(GameState gameState)
+    {
+        var trollsCount = gameState.myTrolls.Count;
+        var nextTroll = trollsCount + 1;
+
+        return nextTroll switch
+        {
+            2 => new Characteristics(1, 1, 1, 1),       // 2nd troll
+            3 or 4 => new Characteristics(2, 2, 1, 1),  // 3rd and 4th troll
+            _ => null,
+        };
     }
 }
 
