@@ -73,7 +73,7 @@ class Map
         }
 
         InitGrassCellsAroundMyShack();
-        InitNearWaterCells();
+        InitNearWaterCells(4);
     }
 
     private void InitGrassCellsAroundMyShack()
@@ -81,9 +81,11 @@ class Map
         var cellsAroundShack = new List<(int, int)>
         {
             (myShack.x - 1, myShack.y),
+            (myShack.x - 2, myShack.y),
             (myShack.x + 1, myShack.y),
-            (myShack.x, myShack.y - 1),
-            (myShack.x, myShack.y + 1)
+            (myShack.x + 2, myShack.y),
+            (myShack.x, myShack.y - 2),
+            (myShack.x, myShack.y + 2)
         };
 
         var prioritizedCellsAroundShack = new List<(Position p, int rank)>();
@@ -104,18 +106,15 @@ class Map
             .ToList();
     }
 
-    /// <summary>
-    /// Grass cells within 5 cells from my shack and adjacent to water.
-    /// </summary>
-    private void InitNearWaterCells()
+    private void InitNearWaterCells(int maxDistance)
     {
-        for (var dx = -5; dx <= 5; dx++)
+        for (var dx = -maxDistance; dx <= maxDistance; dx++)
         {
-            for (var dy = -5; dy <= 5; dy++)
+            for (var dy = -maxDistance; dy <= maxDistance; dy++)
             {
-                if (dx == 0 && dy == 0)
+                if ((dx == 0 && dy == 0) || Math.Abs(dx) + Math.Abs(dy) > maxDistance)
                 {
-                    //position of my shack
+                    //position of my shack or too far from my shack, skipping
                     continue;
                 }
 
@@ -572,6 +571,21 @@ abstract class TrollTask
     public abstract (Command, bool isCompleted) Run(GameState gameState);
 }
 
+class WaitTask : TrollTask
+{
+    public WaitTask(int trollId) : base(trollId)
+    {
+    }
+    public override (Command, bool isCompleted) Run(GameState gameState)
+    {
+        return (new WaitCommand(), isCompleted: true);
+    }
+    public override string ToString()
+    {
+        return $"[WaitTask] ({trollId})";
+    }
+}
+
 class HarvestTask : TrollTask
 {
     enum State
@@ -950,19 +964,89 @@ static class BananaPlantManager
 
 static class PlantManager
 {
-    //Ensure we have a APPLE, PLUM and LEMON around the shack.
+    //Ensure we have a APPLE, PLUM and 2 LEMON around the shack.
     public static PlantTask? GetPlantTask(GameState gameState, int trollId, Dictionary<int, TrollTask> tasksInProgress)
     {
-        var troll = gameState.GetMyTroll(trollId);
+        Program.Debug($"[PlantManager] Checking for plant task around the shack");
+        var myshack = gameState.map.myShack;
 
-        var hasApple = false;
-        var hasPlum = false;
-        var hasLemon = false;
+        var hasApple = tasksInProgress.Values
+                    .OfType<PlantTask>()
+                    .Count(t => t.type == Program.APPLE);
+        var hasPlum = tasksInProgress.Values
+                    .OfType<PlantTask>()
+                    .Count(t => t.type == Program.PLUM);
+        var hasLemon = tasksInProgress.Values
+                    .OfType<PlantTask>()
+                    .Count(t => t.type == Program.LEMON);
 
-        List<Position> availablePositions = [];
+        var myInventory = gameState.myInventory;
 
-        Program.Debug($"[PlantManager] Checking for plant task around the shack {gameState.map.grassCellsAroundMyShack.Count}");
+        var nearWaterCells = gameState.map.nearWaterCells;
+        var availablePositions = new List<Position>();
+        foreach (var nearWaterCell in nearWaterCells)
+        {
+            if (tasksInProgress.Values.OfType<PlantTask>().Any(t => t.position.DistanceTo(nearWaterCell) == 0))
+            {
+                //There is already a task to plant on this position, we consider it unavailable for planting other trees
+                continue;
+            }
 
+            var tree = gameState.trees.FirstOrDefault(t => t.DistanceTo(nearWaterCell) == 0);
+            if (tree is not null)
+            {
+                switch (tree.type)
+                {
+                    case Program.APPLE:
+                        hasApple++;
+                        break;
+                    case Program.PLUM:
+                        hasPlum++;
+                        break;
+                    case Program.LEMON:
+                        hasLemon++;
+                        break;
+                }
+            }
+            else
+            {
+                availablePositions.Add(nearWaterCell);
+            }
+        }
+        if (availablePositions.Count > 0)
+        {
+            if (hasLemon < 2)
+            {
+                Program.Debug($"[PlantManager] There are only {hasLemon} lemon tree(s) near water, need to plant more");
+                if (myInventory.lemon > 0)
+                {
+                    myInventory.lemon--;
+                    return new PlantTask(trollId, Program.LEMON, availablePositions[0]);
+                }
+            }
+
+            if (hasApple < 1)
+            {
+                Program.Debug($"[PlantManager] There is no apple tree near water, need to plant one");
+                if (myInventory.apple > 0)
+                {
+                    myInventory.apple--;
+                    return new PlantTask(trollId, Program.APPLE, availablePositions[0]);
+                }
+            }
+
+            if (hasPlum < 1)
+            {
+                Program.Debug($"[PlantManager] There is no plum tree near water, need to plant one");
+                if (myInventory.plum > 0)
+                {
+                    myInventory.plum--;
+                    return new PlantTask(trollId, Program.PLUM, availablePositions[0]);
+                }
+            }
+        }
+
+        //Default: check other positions around the shack if there is no position near water available to plant missing trees
         foreach (var position in gameState.map.grassCellsAroundMyShack)
         {
             if (tasksInProgress.Values.OfType<PlantTask>().Any(t => t.position.DistanceTo(position) == 0))
@@ -977,13 +1061,13 @@ static class PlantManager
                 switch (tree.type)
                 {
                     case Program.APPLE:
-                        hasApple = true;
+                        hasApple++;
                         break;
                     case Program.PLUM:
-                        hasPlum = true;
+                        hasPlum++;
                         break;
                     case Program.LEMON:
-                        hasLemon = true;
+                        hasLemon++;
                         break;
                 }
             }
@@ -1000,41 +1084,28 @@ static class PlantManager
         }
 
         var nextPlantPosition = availablePositions[0];
-        var myInventory = gameState.myInventory;
 
-        if (hasApple == false)
+        if (hasApple < 1)
         {
-            var alreadyPlannedToPlantApple = tasksInProgress.Values
-                .OfType<PlantTask>()
-                .Any(t => t.type == Program.APPLE);
-
-            if (alreadyPlannedToPlantApple == false && myInventory.apple > 0)
+            if (myInventory.apple > 0)
             {
                 myInventory.apple--;
                 return new PlantTask(trollId, Program.APPLE, nextPlantPosition);
             }
         }
 
-        if (hasPlum == false)
+        if (hasPlum < 1)
         {
-            var alreadyPlannedToPlantPlum = tasksInProgress.Values
-                .OfType<PlantTask>()
-                .Any(t => t.type == Program.PLUM);
-
-            if (alreadyPlannedToPlantPlum == false && myInventory.plum > 0)
+            if (myInventory.plum > 0)
             {
                 myInventory.plum--;
                 return new PlantTask(trollId, Program.PLUM, nextPlantPosition);
             }
         }
 
-        if (hasLemon == false)
+        if (hasLemon < 2)
         {
-            var alreadyPlannedToPlantPlum = tasksInProgress.Values
-                .OfType<PlantTask>()
-                .Any(t => t.type == Program.LEMON);
-
-            if (alreadyPlannedToPlantPlum == false && myInventory.lemon > 0)
+            if (myInventory.lemon > 0)
             {
                 myInventory.lemon--;
                 return new PlantTask(trollId, Program.LEMON, nextPlantPosition);
@@ -1341,6 +1412,11 @@ static class TaskSelector
             .OrderBy(m => m.DistanceTo(troll))
             .FirstOrDefault();
 
+        if (closestTree is null)
+        {
+            //No tree with fruits, just wait
+            return new WaitTask(trollId);
+        }
 
         return new HarvestTask(trollId, closestTree.type, closestTree);
     }
