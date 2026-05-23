@@ -30,7 +30,7 @@ class Map
     public const char MY_SHACK = '0';
     public const char OPPONENT_SHACK = '1';
     public const char IRON = '+';
-    public const char WATER = '-';
+    public const char WATER = '~';
     public const char ROCK = '#';
 
     public int width;
@@ -125,10 +125,17 @@ class Map
                     && cells[y][x] == Map.GRASS
                     && IsAdjacentToWater(x, y))
                 {
+
                     nearWaterCells.Add(new Position(x, y));
                 }
             }
         }
+
+
+        nearWaterCells = nearWaterCells
+            .OrderBy(c => c.DistanceTo(myShack))
+            .ThenByDescending(c => c.DistanceTo(opponentShack))
+            .ToList();
     }
 
     private bool IsAdjacentToWater(int x, int y)
@@ -767,18 +774,10 @@ class PlantTask : TrollTask
         switch (state)
         {
             case State.MovingToShack:
-                if (me.DistanceTo(gameState.map.myShack) == 1)
+                if (me.DistanceTo(gameState.map.myShack) <= 1)
                 {
                     state = State.PickingFruit;
                     goto case State.PickingFruit;
-                }
-                else if (me.DistanceTo(gameState.map.myShack) == 0)
-                {
-                    //Case the troll is just trained and is on the shack.
-                    // Need to move him out of the shack to be able to pick the fruit
-                    var grassAroundShack = gameState.map.grassCellsAroundMyShack;
-                    var random = new Random();
-                    return (new MoveCommand(me.id, grassAroundShack[random.Next(grassAroundShack.Count)]), isCompleted: false);
                 }
                 else
                 {
@@ -984,6 +983,8 @@ static class PlantManager
 
         var nearWaterCells = gameState.map.nearWaterCells;
         var availablePositions = new List<Position>();
+
+        Program.Debug($"[PlantManager] Check near water cells {nearWaterCells.Count}");
         foreach (var nearWaterCell in nearWaterCells)
         {
             if (tasksInProgress.Values.OfType<PlantTask>().Any(t => t.position.DistanceTo(nearWaterCell) == 0))
@@ -1148,7 +1149,7 @@ static class TreeChoper
         }
 
         var bananaTreesToChop = gameState.trees
-            .Where(t => t.type == Program.BANANA && t.size == 4 && t.DistanceTo(myshack) < 3)
+            .Where(t => t.type == Program.BANANA && t.DistanceTo(myshack) < 3)
             .OrderBy(t => t.DistanceTo(troll))
             .FirstOrDefault();
 
