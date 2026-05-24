@@ -935,13 +935,11 @@ static class BananaPlantManager
         var troll = gameState.GetMyTroll(trollId);
         var myShack = gameState.map.myShack;
 
-        var nearBananaTrees = gameState.trees
-            .Count(t => t.type == Program.BANANA && t.DistanceTo(myShack) <= 2);
+        var candidatePositions = new List<Position>();
+        candidatePositions.AddRange(gameState.map.nearWaterCells);
+        candidatePositions.AddRange(gameState.map.grassCellsAroundMyShack);
 
-        if (nearBananaTrees >= 2)
-            return null;
-
-        foreach (var candidatePosition in gameState.map.grassCellsAroundMyShack)
+        foreach (var candidatePosition in candidatePositions)
         {
             var tree = gameState.trees.FirstOrDefault(t => t.DistanceTo(candidatePosition) == 0);
             if (tree is null)
@@ -964,7 +962,7 @@ static class BananaPlantManager
 static class PlantManager
 {
     //Ensure we have a APPLE, PLUM and 2 LEMON around the shack.
-    public static PlantTask? GetPlantTask(GameState gameState, int trollId, Dictionary<int, TrollTask> tasksInProgress)
+    public static PlantTask? GetPlantTask(GameState gameState, int trollId, Dictionary<int, TrollTask?> tasksInProgress)
     {
         Program.Debug($"[PlantManager] Checking for plant task around the shack");
         var myshack = gameState.map.myShack;
@@ -1121,7 +1119,6 @@ static class PlantManager
 
 static class TreeChoper
 {
-    // Chop banana trees of size 4
     public static TrollTask? GetTreeChopTask(GameState gameState, int trollId, Dictionary<int, TrollTask> tasksInProgress)
     {
         var troll = gameState.GetMyTroll(trollId);
@@ -1133,23 +1130,27 @@ static class TreeChoper
             return null;
         }
 
-        if (troll.chopPower > 1)
+        //Go chop trees close to enemy shack
+        var enemyShack = gameState.map.opponentShack;
+        for (var d = 1; d <= 2; d++)
         {
-            // chop at enemy shack
-            var enemyShack = gameState.map.opponentShack;
-            var treesAroundEnemyShack = gameState.trees
-                .Where(t => t.DistanceTo(enemyShack) <= 3)
-                .OrderBy(t => t.health)
-                .FirstOrDefault();
-            if (treesAroundEnemyShack is not null)
+            var treesAtDistanceDFromEnemyShack = gameState.trees
+               .Where(t => t.DistanceTo(enemyShack) == d)
+               .ToList();
+            foreach (var tree in treesAtDistanceDFromEnemyShack)
             {
-                Program.Debug($"[TreeChoper] Assigning ChopTask to troll {trollId} to chop tree around enemy shack at position {treesAroundEnemyShack}");
-                return new ChopTask(trollId, treesAroundEnemyShack);
+                var treeIsNotAlreadyTargetedByAnotherChopTask = false == tasksInProgress.Values
+                    .OfType<ChopTask>()
+                    .Any(t => t.treePosition.x == tree.x && t.treePosition.y == tree.y);
+                if (treeIsNotAlreadyTargetedByAnotherChopTask)
+                {
+                    return new ChopTask(trollId, tree);
+                }
             }
         }
 
         var bananaTreesToChop = gameState.trees
-            .Where(t => t.type == Program.BANANA && t.DistanceTo(myshack) < 3)
+            .Where(t => t.type == Program.BANANA && t.size == 4)
             .OrderBy(t => t.DistanceTo(troll))
             .FirstOrDefault();
 
@@ -1160,7 +1161,6 @@ static class TreeChoper
 
         //try other trees if there is no banana tree to chop
         var otherTreesToChop = gameState.trees
-            .Where(t => t.size == 4)
             .OrderBy(t => t.DistanceTo(troll))
             .FirstOrDefault();
 
@@ -1236,6 +1236,49 @@ static class TrainManager
         }
         return characteristics.GetCost(gameState);
     }
+}
+
+static class BananaResourceManager
+{
+    public static TrollTask? GetBananaPlantTask(GameState gameState, int trollId, Dictionary<int, TrollTask?> tasksInProgress)
+    {
+        if (gameState.myInventory.banana >= 2)
+        {
+            //Enough banana in inventory, no need to assign a task to get more bananas
+            return null;
+        }
+
+        var myShack = gameState.map.myShack;
+        var treeWithFruitsOfType = gameState.trees
+            .Where(t => t.type == Program.BANANA && t.fruits > 0)
+            .OrderBy(t => t.DistanceTo(myShack))
+            .ToList();
+
+        foreach (var tree in treeWithFruitsOfType)
+        {
+            var treeIsFree = false == tasksInProgress.Values
+                .OfType<HarvestTask>()
+                .Any(t => t.treePosition.x == tree.x && t.treePosition.y == tree.y);
+            if (treeIsFree)
+            {
+                return new HarvestTask(trollId, Program.BANANA, tree);
+            }
+        }
+
+        Program.Debug($"[ResourceManager] No available tree with fruits of type {Program.BANANA} to assign HarvestTask to troll {trollId}");
+
+        var treeWithUpcomingFruitsOfType = gameState.trees
+            .Where(t => t.type == Program.BANANA)
+            .OrderBy(t => t.cooldown)
+            .FirstOrDefault();
+        if (treeWithUpcomingFruitsOfType is not null)
+        {
+            return new HarvestTask(trollId, Program.BANANA, treeWithUpcomingFruitsOfType);
+        }
+
+        return null;
+    }
+
 }
 
 static class ResourceManager
@@ -1369,27 +1412,80 @@ static class ResourceManager
     }
 }
 
+static class LateGame
+{
+    /// <summary>
+    /// collect trees near the shack 
+    /// </summary>
+    public class ResourceManager
+    {
+        public static TrollTask? SelectTask(GameState gameState, int trollId, Dictionary<int, TrollTask?> tasksInProgress)
+        {
+            var troll = gameState.GetMyTroll(trollId);
+
+            var myShack = gameState.map.myShack;
+
+            for (var distanceToShack = 1; distanceToShack <= 2; distanceToShack++)
+            {
+                var treeSortedByCooldown = gameState.trees
+                    .Where(t => t.DistanceTo(myShack) == distanceToShack)
+                    .OrderByDescending(t => t.cooldown)
+                    .ToList();
+
+                foreach (var tree in treeSortedByCooldown)
+                {
+                    var treeIsFree = false == tasksInProgress.Values
+                        .OfType<HarvestTask>()
+                        .Any(t => t.treePosition.x == tree.x && t.treePosition.y == tree.y);
+                    if (treeIsFree)
+                    {
+                        return new HarvestTask(trollId, tree.type, tree);
+                    }
+                }
+            }
+
+            return null;
+        }
+    }
+}
+
 static class TaskSelector
 {
     public static TrollTask SelectTask(GameState gameState, int trollId, Dictionary<int, TrollTask?> tasksInProgress)
     {
         var troll = gameState.GetMyTroll(trollId);
 
-        var plantTask = PlantManager.GetPlantTask(gameState, trollId, tasksInProgress);
-        if (plantTask is not null)
-        {
-            Program.Debug("PlantManager assigns task");
-            return plantTask;
-        }
-
+        //build order
         if (gameState.myTrolls.Count < 3)
         {
+            var plantTask = PlantManager.GetPlantTask(gameState, trollId, tasksInProgress);
+            if (plantTask is not null)
+            {
+                Program.Debug("PlantManager assigns task");
+                return plantTask;
+            }
+
             var resourceTask = ResourceManager.SelectTask(gameState, trollId, tasksInProgress);
             if (resourceTask is not null)
             {
                 Program.Debug("ResourceManager assigns task");
                 return resourceTask;
             }
+        }
+
+        //Late game
+        var chopTask = TreeChoper.GetTreeChopTask(gameState, trollId, tasksInProgress);
+        if (chopTask is not null)
+        {
+            Program.Debug("TreeChoper assigns task");
+            return chopTask;
+        }
+
+        var bananaResourceTask = BananaResourceManager.GetBananaPlantTask(gameState, trollId, tasksInProgress);
+        if (bananaResourceTask is not null)
+        {
+            Program.Debug("BananaResourceManager assigns task");
+            return bananaResourceTask;
         }
 
         var bananaPlantTask = BananaPlantManager.GetPlantTask(gameState, trollId, tasksInProgress);
@@ -1399,12 +1495,11 @@ static class TaskSelector
             return bananaPlantTask;
         }
 
-
-        var chopTask = TreeChoper.GetTreeChopTask(gameState, trollId, tasksInProgress);
-        if (chopTask is not null)
+        var lateGameResourceTask = LateGame.ResourceManager.SelectTask(gameState, trollId, tasksInProgress);
+        if (lateGameResourceTask is not null)
         {
-            Program.Debug("TreeChoper assigns task");
-            return chopTask;
+            Program.Debug("LateGame.ResourceManager assigns task");
+            return lateGameResourceTask;
         }
 
         Program.Debug("Default task");
